@@ -1,6 +1,8 @@
-# DevSecOps Challenges Profile Company
+# Challenges Profile Company
 
-### 1.1 Настройка SSH: Напишите пример безопасной конфигурации SSH сервера для входящих подключений из внешней сети. 
+## DevSecOps
+
+### 1.1 Настройка SSH: Напишите пример безопасной конфигурации SSH сервера для входящих подключений из внешней сети
 
 > sshd configuration file
 
@@ -79,7 +81,7 @@ ChallengeResponseAuthentication yes
 AuthenticationMethods publickey,keyboard-interactive
 ```
 
-### 1.2 Напишите пример конфигурации SSH для bastion host (SSH jump server). Необходимо указать параметры, отличные от default.
+### 1.2 Напишите пример конфигурации SSH для bastion host (SSH jump server). Необходимо указать параметры, отличные от default
 
 Настройки для безопасного подключения пользователей выше оставляем и добавляем:
 
@@ -112,7 +114,7 @@ ssh -J <jump server> <remote server>
   
 * Мониторим все! Настраиваем auditd сервера на передачу логов в систему SIEM (не храним локально), ELK, Wazuh agent.
 
-### 2.1 Настройка политик безопасности Kubernetes: Напишите yaml, содержащий: Pod Security Admission (PSA) для указанного namespace. В случае нарушения политики модуль должен запускаться, но с добавлением примечания к событию в журнале аудита.
+### 2.1 Настройка политик безопасности Kubernetes: Напишите yaml, содержащий: Pod Security Admission (PSA) для указанного namespace. В случае нарушения политики модуль должен запускаться, но с добавлением примечания к событию в журнале аудита
 
 ```yaml
 # определяем PSA на уровне кластера k8s
@@ -249,7 +251,7 @@ webhooks:
     timeoutSeconds: 5
 ```
 
-### 2.2 Network Policies для ограничения доступа между подами, включая разграничение по namespace и labels. Доступ к подам postgres разрешается по порту 5432 только от подов app01 из пространства имен prod. RBAC политику, разрешающую доступ к указанному namespace пользователю Admin с максимальными привилегиями, а пользователю Audit только на просмотр. 
+### 2.2 Network Policies для ограничения доступа между подами, включая разграничение по namespace и labels. Доступ к подам postgres разрешается по порту 5432 только от подов app01 из пространства имен prod. RBAC политику, разрешающую доступ к указанному namespace пользователю Admin с максимальными привилегиями, а пользователю Audit только на просмотр
 
 * соответственно у нас должны быть созданы все namespaces и развернуты deployments для pods c соответствущими labels
   
@@ -407,11 +409,165 @@ roleRef:
 
 ```
 
-### 3. Настройка Security as Code: Опишите порядок действий по интеграции GitLab SAST в GitLab CI/CD pipeline. Приведите пример необходимых конфигураций для определения целевых объектов сканирования, времени выполнения и получения уведомлений.
+### 3. Настройка Security as Code: Опишите порядок действий по интеграции GitLab SAST в GitLab CI/CD pipeline. Приведите пример необходимых конфигураций для определения целевых объектов сканирования, времени выполнения и получения уведомлений
 
-### 4. Интеграция сканера уязвимостей (например, OpenVAS): Опишите сценарий интеграции, OpenVAS в GitLab CI/CD pipeline для автоматического сканирования уязвимостей в разрабатываемом приложении, действий по обработке результатов сканирования. Напишите пример yaml для GitLab CI/CD, содержащего скрипт по автоматизированному реагированию на обнаруженные уязвимости.
+```yml
+workflow:
+  name: Gitlab mongo + node ci/cd pipeline
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature/
+      when: always
+    - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^feature/ && $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: always
 
-### 5. Предложите схему интеграции Web Application Firewall (WAF) в инфраструктуре: Напишите конфигурацию для внедрения WAF (например, ModSecurity) в Nginx. Напишите конкретные примеры правил безопасности, которые вы бы применили в WAF (например, фильтрация SQL-инъекций, XSS-атак, блокировка заданных паттернов).
+stages:
+  - build
+  - test
+  - sast
+  - deploy
+
+variables:
+  MONGO_URI: $MDB_URI
+  MONGO_USERNAME: $MDB_USERNAME
+  MONGO_PASSWORD: $MDB_PASSWORD
+
+  DOCKER_IMAGE_TAG: "latest"
+  DOCKER_REGISTRY_URL: "registry.example.com" 
+  DOCKER_IMAGE_NAME: "some-image"
+
+docker_build:
+  stage: build
+  image: docker:24.0.5
+  dependencies: []
+  services:
+    - docker:24.0.5-dind
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t $DOCKER_REGISTRY_URL/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG . 
+    - docker push $DOCKER_REGISTRY_URL/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG 
+  only:
+    - master
+    - feature
+docker_deploy:
+  stage: deploy
+  script:
+    - echo "Deploy docker image to k8s cluster"
+unit_testing:
+  stage: test
+  parallel:
+    matrix:
+      - RUNNERS:
+          - saas-linux-small-amd64
+          - saas-linux-medium-amd64
+        NODE_VERSION:
+          - 17-alpine3.14
+          - 21-alpine3.18
+  tags:
+    - $RUNNERS
+  image: node:$NODE_VERSION
+  before_script:
+    - echo "Installing package json dependencies"
+    - npm install
+  script:
+    - echo "Testing nodejs app"
+    - npm test
+  artifacts:
+    name: moctest-result
+    when: always
+    access: all
+    expire_in: "1 days"
+    paths:
+      - "test-results.xml"
+    reports:
+      junit: test-results.xml
+# Buil-in SAST Gitlab template
+sast_scan:
+  stage: sast
+  script:
+    - echo "Running SAST scan"
+    - time analyze
+include:
+- template: Security/SAST.gitlab-ci.yml
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+variables:
+  SAST_EXCLUDE_PATHS: "node_modules/" # Exclude any directories you don't want to analyze
+notifications:
+  email:
+    recipients:
+      - smilovesmirnov@gmail.com
+    on_success: change
+    on_failure: always
+# Another way with image
+#  extends: .sast-analyzer
+#  image:
+#    name: "$SAST_ANALYZER_IMAGE"
+#  variables:
+#    SAST_ANALYZER_IMAGE_TAG: 4
+#    SAST_ANALYZER_IMAGE: "$SECURE_ANALYZERS_PREFIX/nodejs-scan:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED == 'true' || $SAST_DISABLED == '1'
+#      when: never
+#    - if: $SAST_EXCLUDED_ANALYZERS =~ /nodejs-scan/
+#      when: never
+#    - if: $CI_COMMIT_BRANCH
+#      exists:
+#        - '**/package.json'
+
+```
+
+### 4. Интеграция сканера уязвимостей (например, OpenVAS): Опишите сценарий интеграции, OpenVAS в GitLab CI/CD pipeline для автоматического сканирования уязвимостей в разрабатываемом приложении, действий по обработке результатов сканирования. Напишите пример yaml для GitLab CI/CD, содержащего скрипт по автоматизированному реагированию на обнаруженные уязвимости
+
+```yml
+openvas_scan:
+  stage: sast
+  image: mikesplain/openvas:latest 
+  script:
+    - echo "Running OpenVAS scan"
+    - apt-get update && apt-get install -y sshpass 
+    - ssh-keyscan $TARGET_HOST >> ~/.ssh/known_hosts # добавить ssh key сканируемого хоста в known_hosts
+   # Устанавливаем и настраиваем OpenVAS на таргет хосте
+   - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo apt-get update && sudo apt-get install -y openvas" 
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo greenbone-nvt-sync" # Sync OpenVAS plugins
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --create-user=$OPENVAS_USER --role=Admin" # Create OpenVAS user
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --user=$OPENVAS_USER --new-password=$OPENVAS_PASSWORD" # Set OpenVAS user password
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --rebuild --progress" # Rebuild OpenVAS database
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvas-scapdata-sync" # Sync SCAP data
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvas-certdata-sync" # Sync CERT data
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --rebuild --progress" # Rebuild OpenVAS database again
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --get-scanners" # Check scanners
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --get-users" # Check users
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --get-tasks" # Check tasks
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --get-config" # Check configuration
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --create-target=$TARGET_NAME --hosts=$TARGET_IP" # Create OpenVAS target
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --create-task=$TASK_NAME --target=$TARGET_NAME --config=Full and Fast" # Create OpenVAS task
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --start-task=$TASK_NAME" # Start OpenVAS task
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --get-tasks" # Check task status
+    - sshpass -p $TARGET_PASSWORD ssh $TARGET_USERNAME@$TARGET_HOST "sudo openvasmd --get-results $TASK_ID" > openvas_results.txt # Get OpenVAS scan results
+  artifacts:
+    reports:
+      sast: gl-sast-report.json # Save OpenVAS scan results as an artifact
+  after_script:
+    - if [ -f gl-sast-report.json ]; then cat gl-sast-report.json | jq '.vulnerabilities[] | select(.severity >= "high")'; fi
+    - |
+      if [ -f gl-sast-report.json ]; then
+        HIGH_SEVERITY_COUNT=$(cat gl-sast-report.json | jq '[.vulnerabilities[] | select(.severity >= "high") | .severity] | length')
+        if [ "$HIGH_SEVERITY_COUNT" -gt 0 ]; then
+          echo "High severity vulnerabilities detected. Taking remediation actions..."
+          # Send email notification
+          echo "Subject: High severity vulnerabilities detected in the project" > email.txt
+          echo "From: smilovesmirnov@gmail.com" >> email.txt
+          echo "To: recipient@example.com" >> email.txt
+          echo "" >> email.txt
+          echo "High severity vulnerabilities have been detected in the project. Please take appropriate actions to address them." >> email.txt
+          cat email.txt | sendmail -t
+          exit 1 # Exit with a non-zero status code to indicate failure if high severity vulnerabilities are found
+        fi
+      fi
+```
+
+### 5. Предложите схему интеграции Web Application Firewall (WAF) в инфраструктуре: Напишите конфигурацию для внедрения WAF (например, ModSecurity) в Nginx. Напишите конкретные примеры правил безопасности, которые вы бы применили в WAF (например, фильтрация SQL-инъекций, XSS-атак, блокировка заданных паттернов)
 
 ![WAF Integragion](assets/waf_diagram.jpeg)
 
@@ -479,7 +635,9 @@ sudo cp crs-setup.conf.example crs-setup.conf
 
 sudo systemctl restart nginx
 ```
+
 * Check that modsecurity rules working
+
 > curl -H "User-Agent: Nikto" http://localhost/
 
 ```html
@@ -542,4 +700,31 @@ Include /usr/local/coreruleset-4.2.0/rules/*.conf
 SecRule ARGS:testparam "@contains test" "id:1234,deny,log,status:403"
 ```
 
-### 6. Конфигурация ELK (EFK): Напишите конфигурацию агентов для сбора и анализа логов приложения в Kubernetes с использованием ELK. Приведите перечень основных событий, которые вы считаете важными для мониторинга информационной безопасности.
+### 6. Конфигурация ELK (EFK): Напишите конфигурацию агентов для сбора и анализа логов приложения в Kubernetes с использованием ELK. Приведите перечень основных событий, которые вы считаете важными для мониторинга информационной безопасности
+
+* [Run Elastic Agent on Kubernetes managed by Fleet](https://www.elastic.co/guide/en/fleet/current/running-on-kubernetes-managed-by-fleet.html)
+
+* [Configuring Kubernetes metadata enrichment on Elastic Agent](https://www.elastic.co/guide/en/fleet/current/configuring-kubernetes-metadata.html)
+
+* [ELK monitoring agent config for k8s cluster](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-state-metrics)
+
+* События:
+  * аутентификации и авторизации: Отслеживайте события аутентификации и авторизации, чтобы отслеживать доступ пользователей к кластеру, включая успешные и неудачные попытки входа в систему, привязку ролей и изменения политик контроля доступа.
+
+  * безопасности модулей: события связанные с безопасностью модулей, создание, удаление, изменения в развертывании и попытки повышения привилегий.
+
+  * сетевой безопасности: сетевой трафик и события, нарушения сетевой политики и подозрительные сетевые действия.
+
+  * безопасности контейнера: события безопасности среды выполнения контейнера, уязвимости образа контейнера и аномалии среды выполнения.
+
+  * системы и ядра: события на уровне системы и ядра в кластере, включая системные вызовы, создание процессов, изменения файловой системы и загрузку модулей ядра.
+
+  * изменения конфигурации кластера: изменения в конфигурациях кластера, включая изменения в объектах Kubernetes (например, в deployments, services, configmaps и так далее), настройках всего кластера и конфигурациях, связанных с безопасностью.
+
+  * журналы аудита: аудит в Kubernetes, чтобы отслеживать все запросы к серверу API, включая действия пользователей, создание, изменение и удаление ресурсов. Эти журналы аудита содержат подробную информацию обо всех действиях в кластере, помогая выявлять и расследовать инциденты безопасности.
+
+  * нарушения политики безопасности: нарушения политик безопасности и рекомендованных практик, таких как несоответствующие конфигурации модулей, небезопасные образы контейнеров и отклонения от базовых уровней безопасности.
+
+  * обнаружение угроз: Внедрите механизмы обнаружения угроз для выявления потенциальных угроз безопасности и аномалий в кластере, таких как подозрительные модели поведения, известные векторы атак и признаки компрометации.
+
+  * мониторинг состояния всех активов системы и сети : обеспечить соответствие нормативным требованиям и стандартам безопасности, отслеживая и сообщая о событиях безопасности всех компонентов и активов, имеющих отношение к целям организации по соблюдению требований.
