@@ -436,6 +436,8 @@ variables:
   DOCKER_IMAGE_NAME: "some-image"
 
   SAST_EXCLUDE_PATHS: "node_modules/" # Exclude any directories you don't want to analyze
+  SAST_EXCLUDED_ANALYZERS: "sobelow, brakeman, kubesec"
+  SAST_EXCLUDED_PATHS: "spec, test, tests, tmp, qa"
 
 include:
 - template: Security/SAST.gitlab-ci.yml
@@ -503,22 +505,6 @@ sast:
       sast: gl-sast-report.json
       
 # For notifications we can use [gitlab for slack](https://docs.gitlab.com/ee/user/project/integrations/gitlab_slack_application.html)
-
-# Another way with image
-#  extends: .sast-analyzer
-#  image:
-#    name: "$SAST_ANALYZER_IMAGE"
-#  variables:
-#    SAST_ANALYZER_IMAGE_TAG: 4
-#    SAST_ANALYZER_IMAGE: "$SECURE_ANALYZERS_PREFIX/nodejs-scan:$SAST_ANALYZER_IMAGE_TAG"
-#  rules:
-#    - if: $SAST_DISABLED == 'true' || $SAST_DISABLED == '1'
-#      when: never
-#    - if: $SAST_EXCLUDED_ANALYZERS =~ /nodejs-scan/
-#      when: never
-#    - if: $CI_COMMIT_BRANCH
-#      exists:
-#        - '**/package.json'
 ```
 
 ### 4. Интеграция сканера уязвимостей (например, OpenVAS): Опишите сценарий интеграции, OpenVAS в GitLab CI/CD pipeline для автоматического сканирования уязвимостей в разрабатываемом приложении, действий по обработке результатов сканирования. Напишите пример yaml для GitLab CI/CD, содержащего скрипт по автоматизированному реагированию на обнаруженные уязвимости
