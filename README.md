@@ -435,6 +435,8 @@ variables:
   DOCKER_REGISTRY_URL: "registry.example.com" 
   DOCKER_IMAGE_NAME: "some-image"
 
+  SAST_EXCLUDE_PATHS: "node_modules/" # Exclude any directories you don't want to analyze
+
 docker_build:
   stage: build
   image: docker:24.0.5
@@ -491,8 +493,6 @@ include:
   artifacts:
     reports:
       sast: gl-sast-report.json
-variables:
-  SAST_EXCLUDE_PATHS: "node_modules/" # Exclude any directories you don't want to analyze
 notifications:
   email:
     recipients:
