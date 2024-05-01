@@ -417,7 +417,9 @@ workflow:
   rules:
     - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature/
       when: always
-    - if: $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^feature/ && $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if:
+        $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME =~ /^feature/ && $CI_PIPELINE_SOURCE ==
+        "merge_request_event"
       when: always
 
 stages:
@@ -426,21 +428,24 @@ stages:
   - sast
   - deploy
 
+# include:
+# - template: Security/SAST.gitlab-ci.yml
+
 variables:
   MONGO_URI: $MDB_URI
   MONGO_USERNAME: $MDB_USERNAME
   MONGO_PASSWORD: $MDB_PASSWORD
 
-  DOCKER_IMAGE_TAG: "latest"
-  DOCKER_REGISTRY_URL: "registry.example.com" 
-  DOCKER_IMAGE_NAME: "some-image"
+  DOCKER_IMAGE_TAG: $CI_PIPELINE_ID
+  DOCKER_REGISTRY_URL: ""
+  DOCKER_IMAGE_NAME: ""
+  DOCKER_USERNAME: ""
+
+  CI_JOB_TOKEN: ""
 
   SAST_EXCLUDE_PATHS: "node_modules/" # Exclude any directories you don't want to analyze
   SAST_EXCLUDED_ANALYZERS: "sobelow, brakeman, kubesec"
-  SAST_EXCLUDED_PATHS: "spec, test, tests, tmp, qa"
-
-include:
-- template: Security/SAST.gitlab-ci.yml
+  SAST_EXCLUDED_PATHS: "node_modules/, spec, test, tests, tmp, qa"
 
 docker_build:
   stage: build
@@ -448,49 +453,168 @@ docker_build:
   dependencies: []
   services:
     - docker:24.0.5-dind
+  before_script:
+    - echo "CI_REGISTRY_USER:" $CI_REGISTRY_USER
+    - echo "CI_REGISTRY_PASSWORD:" $CI_REGISTRY_PASSWORD
+    - echo "CI_REGISTRY:" $CI_REGISTRY
+    - echo "DOCKER_USERNAME:" $DOCKER_USERNAME
+    - echo "DOCKER_IMAGE_NAME:" $DOCKER_IMAGE_NAME
+    - echo "CI_JOB_TOKEN:" $CI_JOB_TOKEN
+    - echo "DOCKER_REGISTRY_URL:" $DOCKER_REGISTRY_URL
+    - echo "DOCKER_IMAGE_TAG:" $DOCKER_IMAGE_TAG
   script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
-    - docker build -t $DOCKER_REGISTRY_URL/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG . 
-    - docker push $DOCKER_REGISTRY_URL/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG 
+    - docker login $DOCKER_REGISTRY_URL -u $DOCKER_USERNAME -p $CI_JOB_TOKEN
+    - docker build -t $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG .
+    - docker images $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG
+    - mkdir image
+    - docker save $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG > image/$DOCKER_IMAGE_NAME-$DOCKER_IMAGE_TAG.tar
+  artifacts:
+    when: on_success
+    expire_in: "3 days"
+    paths:
+      - "image"
   only:
-    - master
-    - feature
+    # - master
+    - feature-cicd
+docker_test:
+  stage: build
+  image: docker:24.0.5
+  needs:
+    - docker_build
+  services:
+    - docker:24.0.5-dind
+  script:
+    - echo "testing docker image"
+    - docker load -i image/$DOCKER_IMAGE_NAME-$DOCKER_IMAGE_TAG.tar
+    - docker run --name $DOCKER_IMAGE_NAME -d -p 3000:3000 $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG
+    - export DOCKER_IP=$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' ${DOCKER_IMAGE_NAME})
+    - echo $DOCKER_IP
+    - docker run alpine wget -q -O - http://$DOCKER_IP:3000/live | grep live
+docker_push:
+  stage: build
+  needs:
+    - docker_build
+    - docker_test
+  image: docker:24.0.5
+  services:
+    - docker:24.0.5-dind
+  script:
+  - docker load -i image/$DOCKER_IMAGE_NAME-$DOCKER_IMAGE_TAG.tar
+  - echo "$CI_REGISTRY -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD"
+  - docker login $CI_REGISTRY -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD
+  - docker tag $DOCKER_USERNAME/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG $CI_REGISTRY_IMAGE/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG
+  - docker images
+  - docker push $CI_REGISTRY_IMAGE/$DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG
 docker_deploy:
   stage: deploy
   needs:
-    - sast
+    - docker_build
+    - docker_test
+    - docker_push
   script:
     - echo "Deploy docker image to k8s cluster"
 unit_testing:
   stage: test
-  needs:
-    - docker_build
   parallel:
     matrix:
       - RUNNERS:
           - saas-linux-small-amd64
-          - saas-linux-medium-amd64
+          # - saas-linux-medium-amd64
         NODE_VERSION:
           - 17-alpine3.14
-          - 21-alpine3.18
+          # - 21-alpine3.18
   tags:
     - $RUNNERS
   image: node:$NODE_VERSION
+  services:
+    - name: siddharth67/mongo-db:non-prod
+      alias: mongodb
+      pull_policy: always
+  variables:
+    MONGO_URI: $MDB_URI
+    MONGO_USERNAME: $MDB_USERNAME
+    MONGO_PASSWORD: $MDB_PASSWORD
+  before_script:
+    - echo "Installing package json dependencies"
+    - npm install
+  cache:
+    policy: pull-push
+    when: on_success
+    paths:
+      - node_module
+    key:
+      files:
+        - package-lock.json
+      prefix: node_modules
+  script:
+    - echo "Testing nodejs app"
+    - npm test
+  artifacts:
+    name: unit_testing_results
+    when: always
+    access: all
+    expire_in: 1 days
+    paths:
+      - "node_modules/"
+    reports:
+      junit: rspec.xml
+
+code_coverage:
+  stage: test
+  image: node:17-alpine3.14
+  services:
+    - name: siddharth67/mongo-db:non-prod
+      alias: mongodb
+      pull_policy: always
+  variables:
+    MONGO_URI: $MDB_URI
+    MONGO_USERNAME: $MDB_USERNAME
+    MONGO_PASSWORD: $MDB_PASSWORD
   before_script:
     - echo "Installing package json dependencies"
     - npm install
   script:
     - echo "Testing nodejs app"
     - npm test
+  cache:
+    policy: pull-push
+    when: on_success
+    paths:
+      - "node_modules/"
+    key:
+      files:
+        - package-lock.json
   artifacts:
-    name: moctest-result
+    name: code_coverage_result
     when: always
     access: all
-    expire_in: "1 days"
+    expire_in: 1 days
     paths:
-      - "test-results.xml"
+      - code_coverage_results.xml
     reports:
-      junit: test-results.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/cobertura-coverage.xml
+  allow_failure:
+    exit_codes:
+      - 137
+      - 1
+  coverage: /ALL files[^|]*\|[^|]*\s+([\d\.]+)/
+
+after_unit_test:
+ stage: test
+ needs:
+   - unit_testing
+ cache:
+   policy: pull
+   when: on_success
+   paths:
+     - node_module
+   key:
+     files:
+       - package-lock.json
+     prefix: node_modules
+
 # Buil-in SAST Gitlab template
 sast:
   stage: sast
@@ -503,7 +627,7 @@ sast:
   artifacts:
     reports:
       sast: gl-sast-report.json
-      
+ 
 # For notifications we can use [gitlab for slack](https://docs.gitlab.com/ee/user/project/integrations/gitlab_slack_application.html)
 ```
 
