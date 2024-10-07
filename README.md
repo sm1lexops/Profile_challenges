@@ -685,6 +685,9 @@ openvas_scan:
 
 ![WAF Integragion](assets/waf_diagram.jpeg)
 
+https://www.linuxbabe.com/security/modsecurity-nginx-debian-ubuntu
+5 пункт
+
 ```sh
 # installing dependencies
 
